@@ -27,13 +27,12 @@ jobs:
         apt install docker docker-compose-plugin build-essential
 
     - name: Build
+      uses: actions/download-artifact@v4.1.8
       run: go build -v ./...
 
     - name: Build WASM Container
-    - run: out/c2w ubuntu:24.04 ./container.wasm
-
-    - name: Download a Build Artifact
       uses: actions/download-artifact@v4.1.8
+    - run: out/c2w ubuntu:24.04 ./container.wasm
     
     - name: Test
       run: go test -v ./...
