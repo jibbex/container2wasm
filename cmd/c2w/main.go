@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/archive"
+	"github.com/containerd/platforms"
 	vendor "github.com/ktock/container2wasm"
 	"github.com/ktock/container2wasm/version"
 	"github.com/urfave/cli"
@@ -78,6 +79,10 @@ func main() {
 			Name:  "target-stage",
 			Usage: "target stage of the build",
 		},
+		cli.StringFlag{
+			Name:  "pack",
+			Usage: "Overwrite directory to pack with the emulator (valid only for aarch64 QEMU on emscripten)",
+		},
 	}, flags...)
 	app.Action = rootAction
 	if err := app.Run(os.Args); err != nil {
@@ -101,13 +106,16 @@ func rootAction(clicontext *cli.Context) error {
 		}
 	}
 	var outputPath string
-	if clicontext.Bool("external-bundle") {
+	var needsImg bool
+	if clicontext.Bool("external-bundle") || clicontext.String("pack") != "" {
 		outputPath = arg1
+		needsImg = false
 		if clicontext.Args().Get(1) != "" {
-			return fmt.Errorf("command receives only 1 arg (output image path) with external-bundle")
+			return fmt.Errorf("command receives only 1 arg (output image path)")
 		}
 	} else {
 		outputPath = clicontext.Args().Get(1)
+		needsImg = true
 	}
 	builderPath, err := exec.LookPath(clicontext.String("builder"))
 	if err != nil {
@@ -147,6 +155,9 @@ func rootAction(clicontext *cli.Context) error {
 	if a := clicontext.String("assets"); a != "" && legacy {
 		return fmt.Errorf("\"assets\" unsupported on docker build as of now; install docker buildx instead")
 	}
+	if a := clicontext.String("pack"); a != "" && legacy {
+		return fmt.Errorf("\"pack\" unsupported on docker build as of now; install docker buildx instead")
+	}
 
 	srcImgName := arg1
 	tmpdir, err := os.MkdirTemp("", "container2wasm")
@@ -158,7 +169,7 @@ func rootAction(clicontext *cli.Context) error {
 	if err := os.Mkdir(srcImgPath, 0755); err != nil {
 		return err
 	}
-	if !clicontext.Bool("external-bundle") {
+	if needsImg {
 		if err := prepareSourceImg(builderPath, srcImgName, srcImgPath, clicontext.String("target-arch")); err != nil {
 			return fmt.Errorf("failed to prepare image: %w", err)
 		}
@@ -196,11 +207,18 @@ func build(builderPath string, srcImgPath string, destDir, destFile string, clic
 	if o := clicontext.String("assets"); o != "" {
 		buildxArgs = append(buildxArgs, "--build-context", fmt.Sprintf("assets=%s", o))
 	}
+	if o := clicontext.String("pack"); o != "" {
+		buildxArgs = append(buildxArgs, "--build-context", fmt.Sprintf("qemu-aarch64-pack=%s", o))
+	}
 	if clicontext.Bool("to-js") {
 		buildxArgs = append(buildxArgs,
 			"--target=js",
-			"--build-arg", "OPTIMIZATION_MODE=native",
 		)
+		if clicontext.String("target-arch") == "aarch64" {
+			buildxArgs = append(buildxArgs,
+				"--build-arg", "NO_BINFMT=true",
+			)
+		}
 	} else if ts := clicontext.String("target-stage"); ts != "" {
 		buildxArgs = append(buildxArgs,
 			"--target="+ts,
@@ -259,8 +277,12 @@ func buildWithLegacyBuilder(builderPath string, srcImgPath, destDir, destFile st
 	if clicontext.Bool("to-js") {
 		buildArgs = append(buildArgs,
 			"--target=js",
-			"--build-arg", "OPTIMIZATION_MODE=native",
 		)
+		if clicontext.String("target-arch") == "aarch64" {
+			buildArgs = append(buildArgs,
+				"--build-arg", "NO_BINFMT=true",
+			)
+		}
 	} else if ts := clicontext.String("target-stage"); ts != "" {
 		buildArgs = append(buildArgs,
 			"--target="+ts,
@@ -302,12 +324,22 @@ func prepareSourceImg(builderPath, imgName, tmpdir, targetarch string) error {
 	if idata, err := exec.Command(builderPath, "image", "inspect", imgName).Output(); err != nil {
 		needsPull = true
 	} else if targetarch != "" {
+		p, err := platforms.Parse(targetarch)
+		if err != nil {
+			return fmt.Errorf("failed to parse arch %q", targetarch)
+		}
+		mc := platforms.Only(p)
 		inspectData := make([]map[string]interface{}, 1)
 		if err := json.Unmarshal(idata, &inspectData); err != nil {
 			return err
 		}
-		if a := inspectData[0]["Architecture"]; a != targetarch {
-			log.Printf("unexpected archtecture %v (target: %v). Try \"--target-arch\" when specifying an architecture.\n", a, targetarch)
+		imageArch := inspectData[0]["Architecture"].(string)
+		imagePlatform, err := platforms.Parse(imageArch)
+		if err != nil {
+			log.Printf("failed to parse archtecture of image (%q): %v\n", imageArch, err)
+			needsPull = true
+		} else if !mc.Match(imagePlatform) {
+			log.Printf("unexpected archtecture %v (target: %v). Try \"--target-arch\" when specifying an architecture.\n", imageArch, targetarch)
 			needsPull = true
 		}
 	}

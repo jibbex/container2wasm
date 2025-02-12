@@ -19,9 +19,9 @@ import (
 	ctdoci "github.com/containerd/containerd/oci"
 	"github.com/containerd/platforms"
 	inittype "github.com/ktock/container2wasm/cmd/init/types"
+	"github.com/moby/sys/user"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	spec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/opencontainers/runc/libcontainer/user"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -325,6 +325,7 @@ func generateSpec(config spec.Image, rootfs string) (_ *specs.Spec, err error) {
 	s, err := ctdoci.GenerateSpecWithPlatform(ctdCtx, nil, p, &ctdcontainers.Container{},
 		ctdoci.WithHostNamespace(specs.NetworkNamespace),
 		ctdoci.WithoutRunMount,
+		ctdoci.WithDefaultPathEnv,
 		ctdoci.WithEnv(ic.Env),
 		ctdoci.WithTTY,           // TODO: make it configurable
 		ctdoci.WithNewPrivileges, // TODO: make it configurable
